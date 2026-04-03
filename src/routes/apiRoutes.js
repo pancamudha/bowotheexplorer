@@ -24,6 +24,7 @@ import * as graphqlController from "../controllers/graphql.controller.js";
 import * as anilistOAuthController from "../controllers/anilist-oauth.controller.js";
 import * as malOAuthController from "../controllers/mal-oauth.controller.js";
 import * as malProxyController from "../controllers/mal-proxy.controller.js";
+import { hlsProxy } from "../controllers/proxy.controller.js";
 
 export const createApiRoutes = (app, jsonResponse, jsonError) => {
   const createRoute = (path, controllerMethod) => {
@@ -90,6 +91,18 @@ export const createApiRoutes = (app, jsonResponse, jsonError) => {
   createRoute("/api/actors/:id", getVoiceActors);
   createRoute("/api/character/:id", getCharacter);
   createRoute("/api/top-search", getTopSearch);
+
+  // Endpoint Proxy Baru untuk Bypass Cloudflare M3U8
+  app.get("/api/proxy", async (req, res) => {
+    try {
+      await hlsProxy(req, res);
+    } catch (err) {
+      console.error("Error in proxy route:", err);
+      if (!res.headersSent) {
+        return jsonError(res, err.message || "Proxy error");
+      }
+    }
+  });
 
   // OAuth and Proxy routes (POST methods)
   app.post("/api/graphql", async (req, res) => {
