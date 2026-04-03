@@ -1,73 +1,108 @@
-export const hlsProxy = async (req, res) => {
-  if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "*");
-    return res.status(200).end();
-  }
+// src/controllers/proxy.controller.js
 
-  const { url: targetUrl, referer } = req.query;
-  if (!targetUrl) return res.status(400).send("Missing URL");
+const { Readable } = require('stream');
 
-  const targetReferer = referer || "https://megacloud.blog/";
+/**
+ * Streaming Proxy Controller
+ * Bypasses 403 Forbidden by spoofing browser headers and rewrites m3u8 playlists.
+ */
+const getProxyStream = async (req, res) => {
+    const targetUrl = req.query.url;
+    const refererUrl = req.query.referer || 'https://megacloud.blog/';
 
-  try {
-    const response = await fetch(targetUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": targetReferer,
-        "Origin": new URL(targetReferer).origin,
-        "Accept": "*/*"
-      },
-    });
-
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    const contentType = response.headers.get("content-type");
-    if (contentType) res.setHeader("Content-Type", contentType);
-
-    if (!response.ok) {
-       return res.status(response.status).send(await response.text());
+    // 1. Validate Target Parameter
+    if (!targetUrl) {
+        return res.status(400).json({ 
+            success: false,
+            error: 'Target "url" parameter is required.' 
+        });
     }
 
-    if (targetUrl.includes(".m3u8") || (contentType && contentType.includes("mpegurl"))) {
-      let text = await response.text();
-      
-      const targetUrlObj = new URL(targetUrl);
-      const targetBase = targetUrlObj.origin + targetUrlObj.pathname.substring(0, targetUrlObj.pathname.lastIndexOf("/") + 1);
+    try {
+        const parsedTargetUrl = new URL(targetUrl);
 
-      const protocol = req.headers['x-forwarded-proto'] || 'http';
-      const host = req.headers.host;
-      const proxyBaseUrl = `${protocol}://${host}/api/proxy`;
+        // 2. Comprehensive Header Spoofing
+        const customHeaders = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': refererUrl,
+            'Origin': new URL(refererUrl).origin,
+            'Connection': 'keep-alive',
+            // 'Sec-Fetch-Dest': 'empty',
+            // 'Sec-Fetch-Mode': 'cors',
+            // 'Sec-Fetch-Site': 'cross-site'
+        };
 
-      const lines = text.split('\n');
-      const rewrittenLines = lines.map(line => {
-        const trimmed = line.trim();
-        if (!trimmed) return line;
+        // 3. Fetch Data from Target Server
+        const response = await fetch(targetUrl, {
+            method: 'GET',
+            headers: customHeaders,
+        });
 
-        if (trimmed.startsWith('#EXT-X-KEY:') && trimmed.includes('URI=')) {
-            return trimmed.replace(/URI="([^"]+)"/, (match, uri) => {
-                const absoluteUrl = uri.startsWith("http") ? uri : (uri.startsWith("/") ? targetUrlObj.origin + uri : targetBase + uri);
-                const proxiedUrl = `${proxyBaseUrl}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(targetReferer)}`;
-                return `URI="${proxiedUrl}"`;
+        // 4. Handle Target Server Rejections
+        if (!response.ok) {
+            return res.status(response.status).json({
+                success: false,
+                error: `Access denied by target server (${response.status})`,
+                details: response.statusText
             });
         }
 
-        if (trimmed.startsWith('#')) {
-            return line;
+        // 5. Forward Necessary Headers to Client
+        const contentType = response.headers.get('content-type') || 'application/octet-stream';
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Access-Control-Allow-Origin', '*'); // Ensure CORS is open for your frontend player
+
+        // 6. Special Handling for M3U8 Playlists (Relative to Absolute URL Rewrite)
+        if (contentType.includes('mpegurl') || contentType.includes('mpegURL') || targetUrl.includes('.m3u8')) {
+            let text = await response.text();
+            
+            // Extract base URL to append to relative segment paths
+            const targetBaseUrl = parsedTargetUrl.href.substring(0, parsedTargetUrl.href.lastIndexOf('/') + 1);
+
+            // Rewrite the playlist content
+            text = text.split('\n').map(line => {
+                const trimmedLine = line.trim();
+                // If it's a valid path (not empty, not a comment, not already an absolute URL)
+                if (trimmedLine && !trimmedLine.startsWith('#') && !trimmedLine.startsWith('http')) {
+                    return targetBaseUrl + trimmedLine;
+                }
+                return line;
+            }).join('\n');
+
+            return res.status(200).send(text);
         }
 
-        const absoluteUrl = trimmed.startsWith("http") ? trimmed : (trimmed.startsWith("/") ? targetUrlObj.origin + trimmed : targetBase + trimmed);
-        return `${proxyBaseUrl}?url=${encodeURIComponent(absoluteUrl)}&referer=${encodeURIComponent(targetReferer)}`;
-      });
+        // 7. Handle Video Segments (.ts) or Regular Files via Data Piping
+        // This is crucial for performance to avoid loading large video chunks into RAM
+        if (response.body) {
+            // Convert Web Streams API (from fetch) to Node.js Readable Stream
+            const nodeStream = Readable.fromWeb(response.body);
+            
+            // Pipe the data directly to the Express response
+            nodeStream.pipe(res);
+            
+            // Handle premature client disconnections
+            req.on('close', () => {
+                nodeStream.destroy();
+            });
+        } else {
+            // Fallback if response.body is not available as a stream
+            const arrayBuffer = await response.arrayBuffer();
+            return res.status(200).send(Buffer.from(arrayBuffer));
+        }
 
-      return res.send(rewrittenLines.join('\n'));
+    } catch (error) {
+        console.error('[ProxyController] Proxy execution failed:', error.message);
+        return res.status(500).json({ 
+            success: false,
+            error: 'Internal Server Error during proxy execution.', 
+            details: error.message 
+        });
     }
+};
 
-    const arrayBuffer = await response.arrayBuffer();
-    return res.end(Buffer.from(arrayBuffer));
-
-  } catch (error) {
-    console.error("Proxy Error:", error);
-    return res.status(500).send("Proxy Error");
-  }
+module.exports = {
+    getProxyStream
 };
