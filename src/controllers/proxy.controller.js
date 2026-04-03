@@ -13,14 +13,18 @@ export const hlsProxy = async (req, res) => {
   const targetReferer = referer || "https://megacloud.blog/";
 
   try {
+    const clientUserAgent = req.headers['user-agent'] || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36";
+    const clientLanguage = req.headers['accept-language'] || "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7";
+
     const response = await fetch(targetUrl, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "User-Agent": clientUserAgent,
         "Referer": targetReferer,
         "Origin": new URL(targetReferer).origin,
         "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "keep-alive"
+        "Accept-Language": clientLanguage,
+        "Connection": "keep-alive",
+        "X-Requested-With": "XMLHttpRequest" 
       },
     });
 
