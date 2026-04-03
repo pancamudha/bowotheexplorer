@@ -1,8 +1,12 @@
-export const fetchAnilistId = async (slug) => {
+export const fetchAnilistId = async (queryInput) => {
   try {
-    if (!slug) return { anilistId: null, malId: null };
+    if (!queryInput) return { anilistId: null, malId: null };
 
-    const searchQuery = slug.replace(/-\d+$/, '').replace(/-/g, ' ');
+    // Cek apakah input berupa slug (mengandung strip dan diakhiri angka)
+    let searchQuery = queryInput;
+    if (typeof queryInput === 'string' && queryInput.includes('-') && /\d+$/.test(queryInput)) {
+      searchQuery = queryInput.replace(/-\d+$/, '').replace(/-/g, ' ');
+    }
 
     const query = `
       query ($search: String) {
